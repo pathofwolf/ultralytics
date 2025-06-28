@@ -393,25 +393,28 @@ class v8SegmentationLoss(v8DetectionLoss):
         gt_mask: torch.Tensor, pred: torch.Tensor, proto: torch.Tensor, xyxy: torch.Tensor, area: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute the instance segmentation loss for a single image.
-
-        Args:
-            gt_mask (torch.Tensor): Ground truth mask of shape (N, H, W), where N is the number of objects.
-            pred (torch.Tensor): Predicted mask coefficients of shape (N, 32).
-            proto (torch.Tensor): Prototype masks of shape (32, H, W).
-            xyxy (torch.Tensor): Ground truth bounding boxes in xyxy format, normalized to [0, 1], of shape (N, 4).
-            area (torch.Tensor): Area of each ground truth bounding box of shape (N,).
-
-        Returns:
-            (torch.Tensor): The calculated mask loss for a single image.
-
-        Notes:
-            The function uses the equation pred_mask = torch.einsum('in,nhw->ihw', pred, proto) to produce the
-            predicted masks from the prototype masks and predicted mask coefficients.
+        Compute combined BCE + Dice loss per instance.
         """
-        pred_mask = torch.einsum("in,nhw->ihw", pred, proto)  # (n, 32) @ (32, 80, 80) -> (n, 80, 80)
-        loss = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
-        return (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).sum()
+        pred_mask = torch.einsum("in,nhw->ihw", pred, proto)  # (n, H, W)
+        
+        # BCE
+        bce = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
+        bce_loss = (crop_mask(bce, xyxy).mean(dim=(1, 2)) / area).sum()
+
+        # Dice
+        pred_probs = torch.sigmoid(pred_mask)
+        pred_crop = crop_mask(pred_probs, xyxy)
+        gt_crop = crop_mask(gt_mask, xyxy)
+
+        smooth = 1.0
+        intersection = (pred_crop * gt_crop).sum(dim=(1, 2))
+        union = pred_crop.sum(dim=(1, 2)) + gt_crop.sum(dim=(1, 2))
+        dice = 1.0 - (2.0 * intersection + smooth) / (union + smooth)
+        dice_loss = dice.mean()
+
+        # Combine losses
+        total_loss = 0.9 * bce_loss + 0.3 * dice_loss
+        return total_loss
 
     def calculate_segmentation_loss(
         self,
