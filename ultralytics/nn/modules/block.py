@@ -82,27 +82,42 @@ class DFL(nn.Module):
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
 
 
+class ASPP(nn.Module):
+    """Atrous Spatial Pyramid Pooling (ASPP) Module."""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.atrous_block1 = nn.Conv2d(in_channels, out_channels, 1, padding=0, dilation=1)
+        self.atrous_block6 = nn.Conv2d(in_channels, out_channels, 3, padding=6, dilation=6)
+        self.atrous_block12 = nn.Conv2d(in_channels, out_channels, 3, padding=12, dilation=12)
+        self.atrous_block18 = nn.Conv2d(in_channels, out_channels, 3, padding=18, dilation=18)
+        self.conv_1x1_output = nn.Conv2d(out_channels * 4, out_channels, 1)
+
+    def forward(self, x):
+        x1 = self.atrous_block1(x)
+        x2 = self.atrous_block6(x)
+        x3 = self.atrous_block12(x)
+        x4 = self.atrous_block18(x)
+        x = torch.cat((x1, x2, x3, x4), dim=1)
+        return self.conv_1x1_output(x)
+
 class Proto(nn.Module):
-    """Ultralytics YOLO models mask Proto module for segmentation models."""
-
+    """Proto module with higher resolution and ASPP."""
     def __init__(self, c1: int, c_: int = 256, c2: int = 32):
-        """
-        Initialize the Ultralytics YOLO models mask Proto module with specified number of protos and masks.
-
-        Args:
-            c1 (int): Input channels.
-            c_ (int): Intermediate channels.
-            c2 (int): Output channels (number of protos).
-        """
         super().__init__()
         self.cv1 = Conv(c1, c_, k=3)
-        self.upsample = nn.ConvTranspose2d(c_, c_, 2, 2, 0, bias=True)  # nn.Upsample(scale_factor=2, mode='nearest')
+        self.aspp = ASPP(c_, c_)  # Apply ASPP after first conv
+        self.upsample1 = nn.ConvTranspose2d(c_, c_, 2, 2)
+        self.upsample2 = nn.ConvTranspose2d(c_, c_, 2, 2)  # Additional upsample for higher res
         self.cv2 = Conv(c_, c_, k=3)
         self.cv3 = Conv(c_, c2)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Perform a forward pass through layers using an upsampled input image."""
-        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+    def forward(self, x):
+        x = self.cv1(x)
+        x = self.aspp(x)
+        x = self.upsample1(x)
+        x = self.upsample2(x)  # now 4× upsample
+        x = self.cv2(x)
+        return self.cv3(x)
 
 
 class HGStem(nn.Module):
