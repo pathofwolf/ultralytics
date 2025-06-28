@@ -232,13 +232,14 @@ class Detect(nn.Module):
 
 class Segment(Detect):
     """
-    YOLO Segment head for segmentation models.
+    YOLO Segment head for segmentation models with increased proto masks.
 
-    This class extends the Detect head to include mask prediction capabilities for instance segmentation tasks.
+    This class extends the Detect head to include mask prediction capabilities for instance segmentation tasks
+    with an increased number of masks and prototypes for finer segmentation.
 
     Attributes:
-        nm (int): Number of masks.
-        npr (int): Number of protos.
+        nm (int): Number of masks (increased to 64).
+        npr (int): Number of protos (increased to 512).
         proto (Proto): Prototype generation module.
         cv4 (nn.ModuleList): Convolution layers for mask coefficients.
 
@@ -246,41 +247,52 @@ class Segment(Detect):
         forward: Return model outputs and mask coefficients.
 
     Examples:
-        Create a segmentation head
-        >>> segment = Segment(nc=80, nm=32, npr=256, ch=(256, 512, 1024))
+        Create a segmentation head with increased proto masks
+        >>> segment = Segment(nc=80, nm=64, npr=512, ch=(256, 512, 1024))
         >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
         >>> outputs = segment(x)
     """
 
-    def __init__(self, nc: int = 80, nm: int = 32, npr: int = 256, ch: Tuple = ()):
+    def __init__(self, nc: int = 80, nm: int = 64, npr: int = 512, ch: Tuple = ()):
         """
-        Initialize the YOLO model attributes such as the number of masks, prototypes, and the convolution layers.
+        Initialize the YOLO model attributes with increased number of masks and prototypes.
 
         Args:
-            nc (int): Number of classes.
-            nm (int): Number of masks.
-            npr (int): Number of protos.
+            nc (int): Number of classes (default: 80).
+            nm (int): Number of masks (increased to 64).
+            npr (int): Number of protos (increased to 512).
             ch (tuple): Tuple of channel sizes from backbone feature maps.
         """
         super().__init__(nc, ch)
-        self.nm = nm  # number of masks
-        self.npr = npr  # number of protos
-        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+        self.nm = nm  # Increased number of masks to 64
+        self.npr = npr  # Increased number of prototypes to 512
+        self.proto = Proto(ch[0], self.npr, self.nm)  # Protos with updated parameters
 
+        # Adjust convolution layers to handle increased mask coefficients
         c4 = max(ch[0] // 4, self.nm)
-        self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nm, 1)) for x in ch)
+        self.cv4 = nn.ModuleList(
+            nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nm, 1)) for x in ch
+        )
 
     def forward(self, x: List[torch.Tensor]) -> Union[Tuple, List[torch.Tensor]]:
-        """Return model outputs and mask coefficients if training, otherwise return outputs and mask coefficients."""
-        p = self.proto(x[0])  # mask protos
-        bs = p.shape[0]  # batch size
+        """
+        Return model outputs and mask coefficients.
 
-        mc = torch.cat([self.cv4[i](x[i]).view(bs, self.nm, -1) for i in range(self.nl)], 2)  # mask coefficients
-        x = Detect.forward(self, x)
+        Args:
+            x (List[torch.Tensor]): List of feature maps from the backbone.
+
+        Returns:
+            Union[Tuple, List[torch.Tensor]]: Model outputs and mask coefficients, with increased proto masks.
+        """
+        p = self.proto(x[0])  # Mask protos with increased dimensions
+        bs = p.shape[0]  # Batch size
+
+        # Generate mask coefficients
+        mc = torch.cat([self.cv4[i](x[i]).view(bs, self.nm, -1) for i in range(self.nl)], 2)  # Mask coefficients
+        x = Detect.forward(self, x)  # Detection outputs (boxes, scores, classes)
         if self.training:
             return x, mc, p
         return (torch.cat([x, mc], 1), p) if self.export else (torch.cat([x[0], mc], 1), (x[1], mc, p))
-
 
 class OBB(Detect):
     """
